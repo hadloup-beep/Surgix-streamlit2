@@ -201,10 +201,51 @@ def drive_load_all() -> dict:
     Compatible avec la structure de fichiers de la version PC.
     """
     db = {}
+    _debug_msgs = []
+
+    # Test connexion Drive
+    svc = _drive_service()
+    if not svc:
+        _debug_msgs.append("❌ Drive: service non disponible (vérifiez gcp_service_account)")
+    else:
+        _debug_msgs.append("✅ Drive: service connecté")
+
+    # Test crypto
+    try:
+        fernet = _get_fernet()
+        if fernet:
+            _debug_msgs.append("✅ Crypto: Fernet initialisé (crypto_password trouvé)")
+        else:
+            _debug_msgs.append("⚠️ Crypto: pas de Fernet (crypto_password absent des Secrets)")
+    except Exception as e:
+        _debug_msgs.append(f"❌ Crypto: erreur — {e}")
+
+    # Chargement fichiers équipes
     for eq in ["A1", "B1", "B2", "A2"]:
-        eq_data = _drive_download_json(_DRIVE_FILES[eq])
-        if isinstance(eq_data, dict):
-            db.update(eq_data)
+        fname = _DRIVE_FILES[eq]
+        try:
+            eq_data = _drive_download_json(fname)
+            nb = len(eq_data) if isinstance(eq_data, dict) else 0
+            if nb > 0:
+                _debug_msgs.append(f"✅ {fname}: {nb} patients chargés")
+                db.update(eq_data)
+            else:
+                # Essayer de trouver l'ID pour voir si le fichier existe
+                if svc:
+                    fid = _find_file_id(svc, fname)
+                    if fid:
+                        _debug_msgs.append(f"⚠️ {fname}: fichier trouvé (ID={fid[:8]}…) mais 0 patients — probablement erreur de déchiffrement")
+                    else:
+                        _debug_msgs.append(f"⚠️ {fname}: fichier introuvable sur Drive (non partagé?)")
+                else:
+                    _debug_msgs.append(f"⚠️ {fname}: 0 patients (Drive non connecté)")
+        except Exception as e:
+            _debug_msgs.append(f"❌ {fname}: exception — {e}")
+
+    # Stocker les messages de debug dans session_state
+    import streamlit as st
+    st.session_state["_drive_debug"] = _debug_msgs
+
     return {
         "db":    db,
         "users": _drive_download_json(_DRIVE_FILES["users"]),
@@ -679,6 +720,15 @@ def render_sidebar():
 # HEADER
 # ═══════════════════════════════════════════════════════════════
 def render_header(subtitle=""):
+    # Affichage diagnostic Drive (une seule fois au chargement)
+    debug = st.session_state.get("_drive_debug")
+    if debug:
+        with st.expander("🔍 Diagnostic Drive & Crypto (cliquez pour voir)", expanded=(len(st.session_state.get('db', {})) == 0)):
+            for msg in debug:
+                st.markdown(msg)
+        # Effacer après affichage pour ne pas répéter
+        del st.session_state["_drive_debug"]
+
     db   = get_db()
     nb   = len(db)
     al   = sum(1 for p in db.values() if est_alerte(p.get("date_prog","")))
